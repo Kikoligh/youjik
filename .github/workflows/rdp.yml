@@ -14,6 +14,12 @@ jobs:
           New-Item -Path "D:\link subscribe youtube channel" -ItemType Directory -Force
           New-Item -Path "D:\Script" -ItemType Directory -Force
           Write-Host "Directories created"
+          
+          # DÃ©finir le nom du RDP basÃ© sur le repository GitHub
+          $repoFullName = "${{ github.repository }}"
+          $repoName = $repoFullName.Split('/')[-1]
+          [System.Environment]::SetEnvironmentVariable('RDP_NAME', $repoName, 'Machine')
+          Write-Host "RDP Name set to: $repoName"
 
       - name: Configure RDP Settings
         run: |
@@ -233,41 +239,50 @@ jobs:
           Write-Host "=== DOWNLOADING RDP TRACKING SCRIPTS ==="
           
           # ID du dossier Google Drive contenant les scripts de tracking
-          # Dossier: RDP-Scripts
           $trackingFolderId = "1HdvkRD8oY_KyqXqh9oqEFOtuwB2oCPFW"
           
-          # CrÃ©er le dossier pour les scripts de tracking
+          # CrÃ©er le dossier de destination
           $trackingPath = "D:\Script\RDP-Scripts"
           New-Item -Path $trackingPath -ItemType Directory -Force | Out-Null
           
-          # Liste des scripts Ã  tÃ©lÃ©charger
-          $trackingScripts = @(
-              "rdp_tracker.py",
-              "auto_browser.py",
-              "auto_tracker_wrapper.py",
-              "sitecustomize.py",
-              "requirements.txt"
-          )
+          # TÃ©lÃ©charger tout le dossier Google Drive
+          Write-Host "Downloading entire folder from Google Drive..."
+          $tempDownload = "$env:TEMP\gdrive-download"
           
-          Write-Host "Downloading tracking scripts from Google Drive..."
-          
-          foreach ($script in $trackingScripts) {
-              try {
-                  # TÃ©lÃ©charger depuis Google Drive
-                  python -m gdown --fuzzy "https://drive.google.com/drive/folders/$trackingFolderId" -O "$trackingPath\$script" --quiet
-                  
-                  if (Test-Path "$trackingPath\$script") {
-                      $size = [math]::Round((Get-Item "$trackingPath\$script").Length/1KB, 2)
-                      Write-Host "   Downloaded $script ($size KB)"
-                  } else {
-                      Write-Host "   Failed to download $script"
+          try {
+              python -m gdown --folder "https://drive.google.com/drive/folders/$trackingFolderId" -O "$tempDownload" --quiet
+              
+              # Trouver oÃ¹ gdown a mis les fichiers (peut crÃ©er un sous-dossier)
+              $possiblePaths = @(
+                  "$tempDownload",
+                  "$tempDownload\RDP-Scripts",
+                  "$tempDownload\*"
+              )
+              
+              $foundFiles = $false
+              foreach ($path in $possiblePaths) {
+                  $files = Get-ChildItem $path -File -ErrorAction SilentlyContinue
+                  if ($files.Count -gt 0) {
+                      Write-Host "Found files in: $path"
+                      # Copier tous les fichiers vers le dossier final
+                      Copy-Item -Path "$path\*" -Destination $trackingPath -Force -ErrorAction SilentlyContinue
+                      $foundFiles = $true
+                      break
                   }
-              } catch {
-                  Write-Host "   Error downloading $script : $($_.Exception.Message)"
               }
+              
+              if (-not $foundFiles) {
+                  Write-Host "WARNING: No files found after download"
+              }
+              
+              # Nettoyer le dossier temporaire
+              Remove-Item -Path $tempDownload -Recurse -Force -ErrorAction SilentlyContinue
+              
+          } catch {
+              Write-Host "ERROR: Download failed: $($_.Exception.Message)"
           }
           
-          # VÃ©rifier si les scripts ont Ã©tÃ© tÃ©lÃ©chargÃ©s
+          # VÃ©rifier les fichiers tÃ©lÃ©chargÃ©s
           $downloadedScripts = Get-ChildItem $trackingPath -Filter "*.py" -ErrorAction SilentlyContinue
           
           if ($downloadedScripts.Count -gt 0) {
@@ -279,7 +294,6 @@ jobs:
           } else {
               Write-Host ""
               Write-Host "WARNING: No tracking scripts downloaded from Google Drive"
-              Write-Host "Creating fallback scripts..."
           }
           
           # Toujours creer sitecustomize.py localement (version corrigee sans shebang)
@@ -410,9 +424,25 @@ jobs:
           # CrÃ©er un script de dÃ©marrage automatique pour enregistrer le RDP
           Write-Host "Creating auto-start script for RDP registration..."
           $startupFolder = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
-          $autoRegisterRDP = "@echo off`ncd /d D:\Script\RDP-Scripts`nstart /min cmd /c python rdp_register.py"
+          
+          # Script batch qui attend que le systÃ¨me soit prÃªt
+          $line1 = "@echo off"
+          $line2 = "REM Auto-register RDP on dashboard at startup"
+          $line3 = "timeout /t 10 /nobreak >nul"
+          $line4 = "cd /d D:\Script\RDP-Scripts"
+          $line5 = "start `"RDP Registration`" /min cmd /c `"python rdp_register.py`""
+          $line6 = "exit"
+          
+          $autoRegisterRDP = "$line1`n$line2`n$line3`n$line4`n$line5`n$line6"
           $autoRegisterRDP | Out-File -FilePath "$startupFolder\Auto-Register-RDP.bat" -Encoding ASCII -Force
-          Write-Host "RDP auto-registration configured"
+          Write-Host "RDP auto-registration configured in startup folder"
+          
+          # VÃ©rifier que le fichier a Ã©tÃ© crÃ©Ã©
+          if (Test-Path "$startupFolder\Auto-Register-RDP.bat") {
+              Write-Host "Auto-start script created successfully"
+          } else {
+              Write-Host "Warning: Auto-start script creation failed"
+          }
 
       - name: Install Tailscale
         run: |
